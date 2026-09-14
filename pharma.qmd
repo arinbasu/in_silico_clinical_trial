@@ -1,0 +1,156 @@
+---
+title: "Demonstration of an In Silico Clinical Trial for Pharmaceuticals"
+format: typst
+engine: julia
+julia:
+  exeflags:
+    - --project=@v1.13
+execute:
+  echo: true
+  warning: false
+bibliography: references.bib
+---
+
+## Introduction
+In this document, we will illustrate an example of how to conduct in-silico clinical trials for pharmaceuticals. We will follow a simplified version of the method described in Craig et al. (2023) [@Craig2023]. The method involves the following steps:
+
+
+
+We will now use these packages. 
+
+```{julia}
+using Distributions, Random, DifferentialEquations, DataFrames
+```
+
+## Step 2
+Seed a random number generator so that the results are reproducible.
+
+```{julia}
+Random.seed!(123)
+```
+
+## Step 3
+Generate the blood pressure ODE model as the ground truth. Here we assume that the blood pressure decreases over time according to a simple first-order decay model, where the rate of decrease is proportional to the current blood pressure level. The parameters of the model include the decay rate (k), the maximum effect (Emax), the concentration at which half-maximal effect is observed (EC50), and the baseline blood pressure (BP_baseline). This conforms to the Hill's equation, which is commonly used to describe the dose-response relationship in pharmacology @Gesztelyi2012.
+
+```{julia}
+function blood_pressure_ode(u,p,t)
+	k,Emax,EC50,BP_baseline = p
+	return -k * u
+end
+
+```
+
+## Step 4
+Next, we define a function to calculate the blood pressure at any given time point based on the current concentration of the drug and the parameters of the model. This function will be used to evaluate the blood pressure at the end of the simulation period.
+
+```{julia}
+function calculate_bp(C,p)
+	k,Emax,EC50,BP_baseline = p 
+	effect = (Emax * C) / (EC50 + C)
+	return BP_baseline - effect 
+end
+
+```
+
+## Step 5
+We now set up the conditions of generating the virtual cohort of patients. We will define the distributions for the baseline blood pressure, the decay rate (k), and the EC50 parameter. These distributions will be used to sample values for each patient in the virtual cohort.
+
+```{julia}
+dist_BP_baseline = Normal(140,10)
+dist_k = LogNormal(log(0.15), 0.2)
+dist_EC50 = Uniform(5,15)
+```
+
+## Step 6
+We also set up the distributions for the maximum effect (Emax) of the drug and the placebo. The Emax for the drug is expected to be higher than that of the placebo, reflecting the greater efficacy of the drug in lowering blood pressure. In real life, the Emax for the placebo may be non-zero due to psychological effects or other factors, but it is generally expected to be lower than that of the active drug. This is normally determined from prior clinical data or literature or animal experiments. In this example, we will assume that the Emax for the drug is uniformly distributed between 25 and 45 mmHg, while the Emax for the placebo is uniformly distributed between 2 and 8 mmHg. This is simplistic, but a reasonable assumption for demonstration purposes. In practice, these distributions would be informed by prior clinical data or literature.
+
+```{julia}
+dist_Emax_drug = Uniform(25,45)
+dist_Emax_placebo = Uniform(2,8)
+```
+
+## Step 7
+Now we generate the virtual cohort of patients. For each patient, we will sample values for the baseline blood pressure, the decay rate (k), the EC50 parameter, and the maximum effect (Emax) for both the drug and the placebo. We will store these values in a list of tuples, where each tuple represents a patient.So you get 500 individuals with their own unique physiological traits and treatment responses. This allows us to simulate a diverse population of patients, which is important for evaluating the efficacy of the drug in a realistic manner.
+
+```{julia}
+n_patients = 500
+virtual_cohort = []
+
+for i in 1:n_patients
+    # Core physiological traits shared across both testing profiles
+    bp_base = rand(dist_BP_baseline)
+    k_val   = rand(dist_k)
+    ec50    = rand(dist_EC50)
+    
+    # Pre-determine both treatment responses for this specific patient genotype/profile
+    emax_d  = rand(dist_Emax_drug)
+    emax_p  = rand(dist_Emax_placebo)
+    
+    push!(virtual_cohort, (k=k_val, ec50=ec50, bp_baseline=bp_base, emax_drug=emax_d, emax_placebo=emax_p))
+end
+```
+
+## Step 8
+Now we set up the trial protocol where we will evaluate the blood pressure after 24 hours of treatment. We will assume that the starting dose of the drug is related to a concentration of 50 mg/L in the blood. This is a simplification, as in reality, the pharmacokinetics of the drug would determine the actual concentration in the blood over time. However, for this demonstration, we will use a fixed starting concentration to illustrate the concept of an in-silico clinical trial.
+
+```{julia}
+u0=50.0 # 50 mg/L starting dose related concentration
+tspan = (0.0,24.0) # we will evaluate after 24 hours
+```
+
+## Step 9
+We create an empty dataframe to store the results of the trial. For each patient, we will record their ID, the treatment arm they were assigned to (drug or placebo), their baseline blood pressure, their final blood pressure after 24 hours of treatment, and the reduction in blood pressure.
+
+
+```{julia}
+results = DataFrame(
+    Patient_ID = Int[], 
+    Arm = String[], 
+    Baseline_BP = Float64[], 
+    Final_BP = Float64[], 
+    BP_Reduction = Float64[]
+)
+```
+
+## Step 10
+Run the simulation for each patient in the virtual cohort. For each patient, we will simulate the blood pressure response to both the drug and the placebo. We will then calculate the final blood pressure after 24 hours of treatment and record the results in the dataframe.This is the crux of the in-silico clinical trial, where we are able to evaluate the efficacy of the drug and the placebo in a controlled virtual environment. By simulating the responses of a diverse cohort of patients, we can gain insights into the potential effectiveness of the drug in a real-world population. This approach allows us to test the causality of the drug's effect on blood pressure reduction, while also accounting for the variability in patient responses due to their unique physiological traits.
+
+
+```{julia}
+for i in 1:n_patients
+    pat = virtual_cohort[i]
+    
+    # --- DRUG ARM ---
+    p_drug = [pat.k, pat.emax_drug, pat.ec50, pat.bp_baseline]
+    prob_drug = ODEProblem(blood_pressure_ode, u0, tspan, p_drug)
+    sol_drug = solve(prob_drug, Tsit5(), saveat=24.0)
+    
+    bp_final_drug = calculate_bp(sol_drug.u[end], p_drug)
+    push!(results, (i, "Drug", pat.bp_baseline, bp_final_drug, pat.bp_baseline - bp_final_drug))
+    
+    # --- PLACEBO ARM (With active minor effect) ---
+    p_placebo = [pat.k, pat.emax_placebo, pat.ec50, pat.bp_baseline]
+    prob_placebo = ODEProblem(blood_pressure_ode, u0, tspan, p_placebo)
+    sol_placebo = solve(prob_placebo, Tsit5(), saveat=24.0)
+    
+    bp_final_placebo = calculate_bp(sol_placebo.u[end], p_placebo)
+    push!(results, (i, "Placebo", pat.bp_baseline, bp_final_placebo, pat.bp_baseline - bp_final_placebo))
+end
+
+```
+
+```{julia}
+drug_arm = filter(row -> row.Arm == "Drug", results)
+placebo_arm = filter(row -> row.Arm == "Placebo", results)
+
+mean_drug_drop = mean(drug_arm.BP_Reduction)
+std_drug_drop  = std(drug_arm.BP_Reduction)
+
+mean_placebo_drop = mean(placebo_arm.BP_Reduction)
+std_placebo_drop  = std(placebo_arm.BP_Reduction)
+```
+
+
+
+## Results
+The mean blood pressure reduction in the drug arm was `{julia} round(mean_drug_drop, digits=2)` mmHg (SD: `{julia} round(std_drug_drop, digits=2)` mmHg), while the mean reduction in the placebo arm was `{julia} round(mean_placebo_drop, digits=2)` mmHg (SD: `{julia} round(std_placebo_drop, digits=2)` mmHg). This indicates that the drug has a significant effect on lowering blood pressure compared to the placebo.
